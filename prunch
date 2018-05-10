@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Delete remote git branches based on attributes. Your working directory must be within the git repo you want to clean up.
+#
+#
+# -d | --days-old <NUM>    Default is 30.
+# -u | --unmerged          by default only merged branches are deleted.
+#
+# Examples
+#
+# # Delete branches at least 60 days old whether merged or unmerged
+# ./prune-branches --days-old 60 --unmerged
+#
+# # Default. Delete branches at least 30 days old that are merged
+# ./prune-branches
+#
+# Returns 0 on success and 1 if an invalid argument is provided.
+which git > /dev/null
+
+if [[ $? == 1 ]]; then
+	echo "This command requires git is installed."
+fi
+
+positional=()
+while [[ $# -gt 0 ]]; do
+	key="$1"
+
+	case $key in
+		-d|--days-old)
+		daysOld="$2"
+		shift # past argument
+		shift # past value
+		;;
+		-u|--unmerged)
+		unmerged="true"
+		shift # past argument
+		;;
+		*)
+		positional+=("$1")
+		shift # past argument
+		;;
+	esac
+done
+set -- "${postional[@]}" # restore positional parameters
+
+if [[ -z ${daysOld+x} ]]; then
+	daysOld="30"
+fi
+
+if [[ ! "$daysOld" =~ ^[0-9]+$ ]]; then
+	echo "--days-old must be a valid non-negative number."
+	exit 1
+fi
+
+now=$(date +%Y-%m-%d)
+cmpDate=$(date -v -${daysOld}d '+%Y-%m-%d')
+type="merged and unmerged"
+flag=""
+
+if [[ -z ${unmerged+x} ]]; then
+	type="merged"
+	flag=" --merged master"
+fi
+
+git fetch
+# Getting all branches with --merged flag by default (without if requested). This will also show the date of author.
+branchDates=$(for branch in `git branch -r$flag | grep -v HEAD`;do echo -e `git show --format="%ai" $branch | head -n 1 | awk '{print $1;}'` \\t$branch; done | sort -r)
+echo "Deleting ${type} branches from before ${cmpDate}"
+echo "All ${type} branches found on subject repository"
+
+toDelete=()
+
+SAVEIFS=$IFS
+# Change IFS to new line.
+IFS=$'\n'
+for branch in $branchDates; do
+	branchDate=$(echo "$branch" | cut -d' ' -f1 | awk '{$1=$1};1')
+
+	if [[ ! "$branchDate" > "$cmpDate" ]]; then
+		branchName=$(echo "$branch" | cut -d' ' -f2 | awk '{$1=$1};1')
+
+		# Get rid of origin/
+		branchName="${branchName#*\/}"
+
+		# Anything other then master
+		if [[ "$branchName" != "master" ]]; then
+			toDelete+=("$branchName")
+		fi
+	fi
+done
+echo "${toDelete[*]}"
+
+# Restore IFS
+IFS=$SAVEIFS
+
+if [[ ${#toDelete} -lt 1 ]]; then
+	echo "You are clean good sir. Clean as a whistle."
+	exit 0
+fi
+
+echo -n "Are you sure you want to delete the above enumerated branches both locally and remotely? (y/n) "
+read answer
+
+if [[ "$answer" != "y" ]]; then
+	echo "Bye bye"
+	exit 0
+fi
+
+echo "git branch -d" "${toDelete[@]}"
+git branch -d "${toDelete[@]}" 2> /dev/null
+echo "git push origin --delete" "${toDelete[@]}"
+git push origin --delete "${toDelete[@]}"
